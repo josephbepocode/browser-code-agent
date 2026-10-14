@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Browser Code Agent | Local LLM that writes and runs Python</title>
+<meta name="description" content="A coding agent that writes, runs and self-repairs Python fully in your browser with Pyodide and a local LLM.">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/material-darker.min.css">
+<style>
+:root{--bg:#0b0d12;--p:#12151d;--l:#232836;--t:#e6e9f2;--m:#8a92a8;--a:#8bd450;--b:#5ab0ff;--r:#ff6b6b}
+*{box-sizing:border-box}html,body{margin:0;height:100%;font-family:'IBM Plex Sans',system-ui,sans-serif;background:var(--bg);color:var(--t)}
+body{display:flex;flex-direction:column}
+header{display:flex;align-items:center;gap:14px;padding:12px 20px;border-bottom:1px solid var(--l);flex-wrap:wrap}
+.logo{font-weight:600;font-size:18px;font-family:'JetBrains Mono',monospace}.logo b{color:var(--a)}
+.chip{font-size:12px;color:var(--m);border:1px solid var(--l);border-radius:99px;padding:5px 11px;display:flex;align-items:center;gap:6px}.chip i{width:7px;height:7px;border-radius:50%;background:#555}.chip i.ok{background:var(--a)}.chip i.busy{background:#ffc04d;animation:p 1s infinite}@keyframes p{50%{opacity:.3}}
+.sp{flex:1}
+select,button{font:inherit;font-size:13px;border:1px solid var(--l);background:#191d28;color:var(--t);border-radius:10px;padding:8px 12px;cursor:pointer}
+button:hover{border-color:var(--b)}button.go{background:var(--a);color:#0b0d12;border:0;font-weight:600}button:disabled{opacity:.5;cursor:not-allowed}
+main{flex:1;display:grid;grid-template-columns:380px 1fr;min-height:0}
+@media(max-width:900px){main{grid-template-columns:1fr;grid-template-rows:auto auto}html,body{height:auto}}
+#chat{display:flex;flex-direction:column;border-right:1px solid var(--l);min-height:0}
+#log{flex:1;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:12px;min-height:300px}
+.msg{padding:11px 13px;border-radius:14px;font-size:14px;line-height:1.5;white-space:pre-wrap;word-break:break-word}
+.u{background:#1d2a3d;align-self:flex-end;max-width:90%}.a{background:var(--p);border:1px solid var(--l)}.sys{color:var(--m);font-size:12px;text-align:center}
+.a code,.msg pre{font-family:'JetBrains Mono',monospace;font-size:12px}
+.msg pre{background:#0a0c10;padding:8px;border-radius:8px;overflow:auto;margin:6px 0 0}
+form{padding:12px;border-top:1px solid var(--l);display:flex;flex-direction:column;gap:8px}
+textarea{font:inherit;font-size:14px;background:#0f1218;color:var(--t);border:1px solid var(--l);border-radius:12px;padding:10px;resize:vertical;min-height:70px}
+.ex{display:flex;gap:6px;flex-wrap:wrap}.ex button{font-size:11.5px;padding:5px 9px;border-radius:99px}
+.right{display:grid;grid-template-rows:1fr 260px;min-height:0}
+.ed{display:flex;flex-direction:column;min-height:0}.bar{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--l);background:var(--p);font-size:13px;color:var(--m)}
+.CodeMirror{height:100%;font-family:'JetBrains Mono',monospace;font-size:13.5px;background:#0e1016!important}
+#edwrap{flex:1;min-height:300px;position:relative}#edwrap .CodeMirror{position:absolute;inset:0}
+#con{overflow:auto;padding:12px 14px;font-family:'JetBrains Mono',monospace;font-size:12.5px;white-space:pre-wrap;background:#07080b;border-top:1px solid var(--l)}
+#con .err{color:var(--r)}#con .info{color:var(--b)}#con img{max-width:100%;background:#fff;border-radius:8px;margin:6px 0}
+.prog{height:3px;background:var(--l);border-radius:3px;overflow:hidden;margin-top:4px}.prog div{height:100%;width:0;background:linear-gradient(90deg,var(--a),var(--b));transition:width .2s}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">browser<b>.code</b>.agent</div>
+  <span class="chip"><i id="pyDot"></i><span id="pyS">Python loading</span></span>
+  <span class="chip"><i id="llmDot"></i><span id="llmS">LLM not loaded</span></span>
+  <div class="sp"></div>
+  <select id="model">
+    <option value="onnx-community/Qwen2.5-Coder-0.5B-Instruct">Qwen2.5 Coder 0.5B (best, about 480 MB)</option>
+    <option value="HuggingFaceTB/SmolLM2-360M-Instruct">SmolLM2 360M (faster, about 260 MB)</option>
+  </select>
+  <button id="loadLLM">Load model</button>
+</header>
+<main>
+<section id="chat">
+  <div id="log"><div class="msg sys">Describe a task. The agent writes Python, runs it with Pyodide in a sandboxed worker, reads the output, and repairs its own errors. The model and the code run locally on your machine. First model load downloads weights once, then they are cached.</div></div>
+  <div class="prog" id="prog" style="display:none;margin:0 12px"><div></div></div>
+  <form id="f">
+    <div class="ex">
+      <button type="button">FizzBuzz to 20</button><button type="button">First 15 primes with a sieve</button><button type="button">Plot a sine and cosine wave</button><button type="button">Sort a list of words by length</button>
+    </div>
+    <textarea id="q" placeholder="e.g. Write a function that checks if a string is a palindrome and test it"></textarea>
+    <div style="display:flex;gap:8px;align-items:center"><label style="font-size:12px;color:var(--m);display:flex;gap:6px;align-items:center"><input type="checkbox" id="auto" checked> Auto-fix errors (up to 2 retries)</label><div class="sp"></div><button class="go" id="send">Run agent</button></div>
+  </form>
+</section>
+<section class="right">
+  <div class="ed"><div class="bar">main.py<div class="sp"></div><button id="run" class="go" disabled>Run</button><button id="stop">Restart Python</button><button id="dl">Download</button></div><div id="edwrap"><textarea id="code"></textarea></div></div>
+  <div style="display:flex;flex-direction:column;min-height:0"><div class="bar">Console<div class="sp"></div><button id="clr">Clear</button></div><div id="con"></div></div>
+</section>
+</main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/python/python.min.js"></script>
+<script type="module">
+const $=s=>document.querySelector(s);
+const ed=CodeMirror.fromTextArea($('#code'),{mode:'python',theme:'material-darker',lineNumbers:true,indentUnit:4,extraKeys:{'Ctrl-Enter':()=>run(),'Cmd-Enter':()=>run()}});
+ed.setValue(`# Python 3.12 running in your browser via Pyodide\nimport statistics, random\n\nrandom.seed(7)\ndata = [random.gauss(50, 12) for _ in range(1000)]\nprint("mean:", round(statistics.mean(data), 2))\nprint("stdev:", round(statistics.stdev(data), 2))\n`);
+const con=$('#con');const say=(t,c='')=>{const s=document.createElement('span');s.className=c;s.textContent=t;con.appendChild(s);con.scrollTop=1e9};
+$('#clr').onclick=()=>con.innerHTML='';
+// ---- Python worker
+const pyWorkerSrc=`
+importScripts('https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js');
+let py;
+(async()=>{py=await loadPyodide({stdout:t=>postMessage({t:'out',d:t+'\\n'}),stderr:t=>postMessage({t:'err',d:t+'\\n'})});postMessage({t:'ready',v:py.version})})();
+onmessage=async e=>{const code=e.data;
+  try{await py.loadPackagesFromImports(code,{messageCallback:m=>postMessage({t:'info',d:m+'\\n'})});
+    if(/matplotlib/.test(code))await py.runPythonAsync("import matplotlib\\nmatplotlib.use('Agg')");
+    const r=await py.runPythonAsync(code);
+    if(r!==undefined&&r!==null)postMessage({t:'out',d:String(r)+'\\n'});
+    if(/matplotlib/.test(code)){const imgs=await py.runPythonAsync("import io,base64\\nimport matplotlib.pyplot as _p\\n_o=[]\\nfor _n in _p.get_fignums():\\n    _b=io.BytesIO();_p.figure(_n).savefig(_b,format='png',dpi=90,bbox_inches='tight');_o.append(base64.b64encode(_b.getvalue()).decode())\\n_p.close('all')\\n_o");postMessage({t:'imgs',d:imgs.toJs()})}
+    postMessage({t:'done',ok:true})}
+  catch(err){postMessage({t:'err',d:String(err.message||err).split('\\n').slice(-6).join('\\n')+'\\n'});postMessage({t:'done',ok:false,err:String(err.message||err).split('\\n').slice(-4).join('\\n')})}};`;
+let pw,pyReady=false,pending=null,buf='';
+function startPy(){if(pw)pw.terminate();pyReady=false;$('#run').disabled=true;$('#pyDot').className='busy';$('#pyS').textContent='Python loading';
+  pw=new Worker(URL.createObjectURL(new Blob([pyWorkerSrc],{type:'text/javascript'})));
+  pw.onmessage=({data:m})=>{
+    if(m.t==='ready'){pyReady=true;$('#run').disabled=false;$('#pyDot').className='ok';$('#pyS').textContent='Python '+m.v+' ready';}
+    else if(m.t==='out'){buf+=m.d;say(m.d)}else if(m.t==='err'){buf+=m.d;say(m.d,'err')}else if(m.t==='info')say(m.d,'info')
+    else if(m.t==='imgs'){m.d.forEach(b=>{const i=new Image();i.src='data:image/png;base64,'+b;con.appendChild(i)});buf+='[rendered '+m.d.length+' figure(s)]\n'}
+    else if(m.t==='done'){const p=pending;pending=null;$('#run').disabled=false;p&&p({ok:m.ok,out:buf,err:m.err})}}}
+startPy();
+function run(){return new Promise(res=>{if(!pyReady){say('Python is still loading...\n','info');return res({ok:false,out:'',err:'not ready'})}
+  buf='';say('\n>>> running main.py\n','info');$('#run').disabled=true;pending=res;const timer=setTimeout(()=>{if(pending){say('Timed out after 20 s, restarting Python.\n','err');startPy();const p=pending;pending=null;p({ok:false,out:buf,err:'TimeoutError: execution exceeded 20 seconds (possible infinite loop)'})}},20000);
+  const orig=res;pending=r=>{clearTimeout(timer);orig(r)};pw.postMessage(ed.getValue())})}
+$('#run').onclick=run;$('#stop').onclick=()=>{startPy();say('Python restarted.\n','info')};
+$('#dl').onclick=()=>{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([ed.getValue()],{type:'text/x-python'}));a.download='main.py';a.click()};
+// ---- LLM worker (transformers.js)
+const llmSrc=`
+import {pipeline,TextStreamer,env} from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.5.2';
+let gen;
+self.onmessage=async e=>{const m=e.data;
+ if(m.t==='load'){try{
+   let device='wasm',dtype='q4';
+   if(navigator.gpu){try{const a=await navigator.gpu.requestAdapter();if(a){device='webgpu';dtype=a.features.has('shader-f16')?'q4f16':'q4'}}catch{}}
+   gen=await pipeline('text-generation',m.model,{device,dtype,progress_callback:p=>self.postMessage({t:'prog',p})});
+   self.postMessage({t:'loaded',device,dtype})}catch(err){self.postMessage({t:'fail',e:String(err)})}}
+ if(m.t==='gen'){try{const streamer=new TextStreamer(gen.tokenizer,{skip_prompt:true,skip_special_tokens:true,callback_function:x=>self.postMessage({t:'tok',x})});
+   const o=await gen(m.messages,{max_new_tokens:m.max||512,do_sample:false,repetition_penalty:1.05,streamer});
+   self.postMessage({t:'end',text:o[0].generated_text.at(-1).content})}catch(err){self.postMessage({t:'fail',e:String(err)})}}};`;
+let lw,llmReady=false,onTok=null,onEnd=null;
+const files={};
+$('#loadLLM').onclick=()=>{if(lw)lw.terminate();llmReady=false;$('#llmDot').className='busy';$('#llmS').textContent='Downloading weights';$('#prog').style.display='block';
+ lw=new Worker(URL.createObjectURL(new Blob([llmSrc],{type:'text/javascript'})),{type:'module'});
+ lw.onmessage=({data:m})=>{
+  if(m.t==='prog'&&m.p.status==='progress'){files[m.p.file]=[m.p.loaded,m.p.total];let a=0,b=0;Object.values(files).forEach(([x,y])=>{a+=x;b+=y});$('#prog div').style.width=(a/b*100)+'%';$('#llmS').textContent=`Downloading ${(a/1e6).toFixed(0)} / ${(b/1e6).toFixed(0)} MB`}
+  else if(m.t==='loaded'){llmReady=true;$('#prog').style.display='none';$('#llmDot').className='ok';$('#llmS').textContent=`LLM ready (${m.device}, ${m.dtype})`;addMsg('sys','Model loaded on '+m.device.toUpperCase()+'. Ask for any small Python task.')}
+  else if(m.t==='tok')onTok&&onTok(m.x);else if(m.t==='end')onEnd&&onEnd(m.text);
+  else if(m.t==='fail'){$('#llmDot').className='';$('#llmS').textContent='LLM error';addMsg('sys','Model error: '+m.e);onEnd&&onEnd(null)}}
+ lw.postMessage({t:'load',model:$('#model').value})};
+function generate(messages,el){return new Promise(r=>{let acc='';onTok=x=>{acc+=x;el.textContent=acc;$('#log').scrollTop=1e9};onEnd=t=>{onTok=onEnd=null;r(t??acc)};lw.postMessage({t:'gen',messages})})}
+function addMsg(cls,text){const d=document.createElement('div');d.className='msg '+cls;d.textContent=text;$('#log').appendChild(d);$('#log').scrollTop=1e9;return d}
+const SYS=`You are a careful Python coding agent running inside Pyodide (Python 3.12 in a browser). There is no network, no file system access to the user's machine, and no input(). Available: standard library, numpy, pandas, matplotlib. Respond with one short sentence of plan, then exactly one complete runnable program in a single \`\`\`python code block. The program must print its results. For plots use matplotlib and do not call plt.show().`;
+function extract(t){const m=t.match(/```(?:python|py)?\s*\n([\s\S]*?)(```|$)/);return m?m[1].trim():null}
+// Built-in solutions so the demo works before a model is downloaded
+const OFFLINE={'FizzBuzz to 20':`for i in range(1, 21):\n    out = ("Fizz" if i % 3 == 0 else "") + ("Buzz" if i % 5 == 0 else "")\n    print(out or i)`,
+'First 15 primes with a sieve':`def sieve(limit):\n    is_p = [True] * (limit + 1)\n    is_p[0] = is_p[1] = False\n    for i in range(2, int(limit ** 0.5) + 1):\n        if is_p[i]:\n            for j in range(i * i, limit + 1, i):\n                is_p[j] = False\n    return [i for i, p in enumerate(is_p) if p]\n\nprimes = sieve(100)[:15]\nprint(primes)`,
+'Plot a sine and cosine wave':`import numpy as np\nimport matplotlib.pyplot as plt\n\nx = np.linspace(0, 4 * np.pi, 400)\nplt.figure(figsize=(7, 3))\nplt.plot(x, np.sin(x), label="sin")\nplt.plot(x, np.cos(x), label="cos")\nplt.legend(); plt.title("Waves"); plt.grid(alpha=.3)\nprint("Plotted", len(x), "points")`,
+'Sort a list of words by length':`words = ["agent", "py", "browser", "llm", "pyodide", "code"]\nfor w in sorted(words, key=lambda w: (len(w), w)):\n    print(len(w), w)`};
+document.querySelectorAll('.ex button').forEach(b=>b.onclick=()=>{$('#q').value=b.textContent;if(!llmReady&&OFFLINE[b.textContent]){addMsg('u',b.textContent);addMsg('a','No model loaded yet, so here is a built-in reference solution. Load a model to let the agent write its own.');ed.setValue(OFFLINE[b.textContent]);run()}});
+$('#f').onsubmit=async e=>{e.preventDefault();const q=$('#q').value.trim();if(!q)return;
+ if(!llmReady){addMsg('sys','Load a model first (top right). It downloads once and is cached by your browser.');return}
+ $('#send').disabled=true;addMsg('u',q);$('#q').value='';
+ const msgs=[{role:'system',content:SYS},{role:'user',content:q}];
+ for(let attempt=0;attempt<3;attempt++){
+   const el=addMsg('a','');const reply=await generate(msgs,el);if(!reply)break;
+   const code=extract(reply);if(!code){addMsg('sys','No code block found in the reply.');break}
+   ed.setValue(code);const r=await run();
+   if(r.ok){addMsg('sys','Ran successfully'+(attempt?` after ${attempt} fix${attempt>1?'es':''}`:'')+'.');break}
+   if(!$('#auto').checked||attempt===2){addMsg('sys','Execution failed. Edit the code and press Run, or rephrase the task.');break}
+   addMsg('sys','Error detected, asking the agent to repair it...');
+   msgs.push({role:'assistant',content:reply},{role:'user',content:`Running that program failed with:\n${(r.err||r.out).slice(-800)}\nFix the bug and reply with the full corrected program in one python code block.`});
+ }
+ $('#send').disabled=false};
+$('#q').addEventListener('keydown',e=>{if(e.key==='Enter'&&(e.metaKey||e.ctrlKey))$('#f').requestSubmit()});
+</script>
+</body>
+</html>
